@@ -14,7 +14,7 @@ BOT_TOKEN = os.getenv('DISCORD_TOKEN') # Get the token securely
 
 if BOT_TOKEN is None:
     raise ValueError("DISCORD_TOKEN not found. Make sure it's set in your .env file.")
-COMMAND_PREFIX = "/"
+COMMAND_PREFIX = "!"
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # **核心修改: 为持久化数据创建一个专门的目录**
