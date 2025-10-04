@@ -16,3 +16,6 @@ COPY . .
 
 # 当容器启动时，指定要运行的命令
 CMD ["python", "main_bot.py"]
+
+# Ensures Python output is sent straight to terminal (Docker logs)
+ENV PYTHONUNBUFFERED=1 
