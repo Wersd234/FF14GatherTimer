@@ -7,11 +7,30 @@ import time
 import datetime
 from typing import List, Dict, Optional
 from collections import defaultdict
+from discord.ui import View, Button # <--- 新增这行
 import asyncio
 import json
 import os
+import aiohttp
 
-# 移除了 fuzzywuzzy 的导入
+
+
+MAP_ID_MAP = {}
+# 获取项目根目录 (假设此文件在 cogs/ 文件夹下)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+map_id_filepath = os.path.join(project_root, 'map_id.json')
+
+if os.path.exists(map_id_filepath):
+    try:
+        with open(map_id_filepath, 'r', encoding='utf-8') as f:
+            MAP_ID_MAP = json.load(f)
+        print(f"🗺️ 成功加载地图 ID 映射表，共 {len(MAP_ID_MAP)} 个区域。")
+    except Exception as e:
+        print(f"❌ 读取 map_id.json 失败: {e}")
+else:
+    print(f"⚠️ 找不到 {map_id_filepath} 文件，外部地图精确跳转功能将受限。")
+
 
 # --- 常量定义 ---
 NORMAL_REFRESH_INTERVAL = 60
@@ -27,9 +46,107 @@ PING_FILE = 'pings.json'
 
 
 # 移除了 FUZZY_MATCH_THRESHOLD
+class GatheringMapView(View):
+    def __init__(self, grouped_events):
+        super().__init__(timeout=None)
+
+        count = 0
+        for (region, coords), materials in grouped_events.items():
+            if count >= 25: break
+
+            x_str, y_str = "", ""
+            try:
+                coords_clean = coords.replace('[', '').replace(']', '').strip()
+                if ',' in coords_clean:
+                    x_str, y_str = [s.strip() for s in coords_clean.split(',')]
+            except Exception:
+                pass
+
+            map_id = MAP_ID_MAP.get(region)
+
+            if map_id and x_str and y_str:
+                web_map_url = f"https://map.wakingsands.com/#f=mark&id={map_id}&x={x_str}&y={y_str}"
+            elif map_id:
+                web_map_url = f"https://map.wakingsands.com/#f=area&id={map_id}"
+            else:
+                web_map_url = "https://map.wakingsands.com/"
+
+            btn = Button(
+                style=discord.ButtonStyle.link,
+                label=f"🎯 在肥肥咖啡查看：{region} ({coords})",
+                url=web_map_url
+            )
+            self.add_item(btn)
+            count += 1
+    def make_callback(self, region, coords, materials):
+        async def callback(interaction: discord.Interaction):
+            # 1. 提取 X 和 Y 坐标 (将 "[12.03, 17.64]" 变成 "12.03" 和 "17.64")
+            x_str, y_str = "", ""
+            try:
+                coords_clean = coords.replace('[', '').replace(']', '').strip()
+                if ',' in coords_clean:
+                    x_str, y_str = [s.strip() for s in coords_clean.split(',')]
+            except Exception:
+                pass
+
+            # 2. 从全局字典获取对应的 Map ID (基于你的 map_id.json)
+            # 注意：这里使用的是之前在文件顶部定义的 MAP_ID_MAP 变量
+            map_id = MAP_ID_MAP.get(region)
+
+            # 3. 构造正确的「肥肥咖啡」链接 View
+            popup_view = View()
+            if map_id and x_str and y_str:
+                # ✅ 完全正确的 API 调用：传入 id, x, y 画红点！
+                web_map_url = f"https://map.wakingsands.com/#f=mark&id={map_id}&x={x_str}&y={y_str}"
+                popup_view.add_item(Button(
+                    style=discord.ButtonStyle.link,
+                    label=f"🎯 在「肥肥咖啡」查看精准位置",
+                    url=web_map_url
+                ))
+            elif map_id:
+                # 保底：只有 ID，打开地图但不画点
+                web_map_url = f"https://map.wakingsands.com/#f=area&id={map_id}"
+                popup_view.add_item(Button(
+                    style=discord.ButtonStyle.link,
+                    label=f"🗺️ 打开「肥肥咖啡」{region} 页面",
+                    url=web_map_url
+                ))
+            else:
+                # 保底：没有 ID，打开首页
+                popup_view.add_item(Button(
+                    style=discord.ButtonStyle.link,
+                    label=f"🗺️ 打开「肥肥咖啡」首页",
+                    url="https://map.wakingsands.com/"
+                ))
+
+            # 4. 构建弹窗显示的文本和本地图片
+            embed = discord.Embed(
+                title=f"🗺️ {region} - 采集点详情",
+                description=f"**具体坐标：** {coords}\n**可采集物：** {', '.join(materials)}",
+                color=discord.Color.blue()
+            )
+
+            # 读取本地图片 (假设你的图片放在项目根目录的 maps 文件夹下)
+            file = None
+            image_filename = f"{region}.png"
+            image_path = os.path.join(project_root, 'maps', image_filename)
+
+            if os.path.exists(image_path):
+                file = discord.File(image_path, filename="map_image.png")
+                embed.set_image(url="attachment://map_image.png")
+            else:
+                embed.set_footer(text="⚠️ 提示：未找到该地区的本地预览图。你可以点击上方按钮前往网页查看。")
+
+            # 5. 最终发送
+            if file:
+                await interaction.response.send_message(embed=embed, file=file, view=popup_view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, view=popup_view, ephemeral=True)
+
+        return callback
+
 
 class TrackerInstance:
-    # (此类代码与您上一版本完全相同, 无需改动)
     def __init__(self, bot, author, channel, all_nodes_data, manual_offset, user_watchlist, track_all, user_pings,
                  all_watchlists):
         self.bot, self.author, self.channel, self.all_nodes_data, self.manual_offset, self.user_watchlist, self.track_all, self.user_pings, self.all_watchlists = bot, author, channel, all_nodes_data, manual_offset, user_watchlist, track_all, user_pings, all_watchlists
@@ -37,20 +154,35 @@ class TrackerInstance:
         self.monitored_nodes = []
         self.pinged_users_this_spawn = set()
 
+        self.current_upcoming_events = []
+        self.current_time_remaining = 0
+
+
     async def start(self):
         self._prepare_monitored_nodes()
         if not self.monitored_nodes:
             msg = f"**{self.author.display_name}**，你的关注列表为空，或列表中没有任何项目在追踪时间内。"
             if self.track_all: msg = "未能从CSV文件中加载任何有效的采集点数据。"
-            await self.channel.send(msg);
+            await self.channel.send(msg)
             return False
         try:
-            embed = self._build_first_embed()
-            self.tracker_message = await self.channel.send(embed=embed)
+            # 👇 新增：在机器人第一次发消息前，预检查并下载地图
+            soonest_ts = min(node['next_ts'] for node in self.monitored_nodes)
+            upcoming_events = [n for n in self.monitored_nodes if n['next_ts'] == soonest_ts]
+            if upcoming_events:
+                first_region = upcoming_events[0]['data'].get('地区CN')
+                map_id = MAP_ID_MAP.get(first_region)
+
+
+            embed, view, file = self._build_first_embed()
+            kwargs = {'embed': embed, 'view': view}
+            if file:
+                kwargs['file'] = file
+            self.tracker_message = await self.channel.send(**kwargs)
             self.background_task = self.bot.loop.create_task(self.tracker_loop())
             return True
         except Exception as e:
-            await self.channel.send(f"启动追踪器时发生错误: {e}");
+            await self.channel.send(f"启动追踪器时发生错误: {e}")
             return False
 
     async def stop(self):
@@ -85,7 +217,18 @@ class TrackerInstance:
             data = event['data']
             key = (data.get('地区CN', 'N/A'), data.get('具体坐标', 'N/A'))
             grouped_events[key].append(data.get('材料名CN', 'N/A'))
-        return self._build_embed(upcoming_events, grouped_events, time_remaining)
+
+        embed = self._build_embed(upcoming_events, grouped_events, time_remaining)
+        view = GatheringMapView(grouped_events)
+
+        file = None
+        if grouped_events:
+            first_region = list(grouped_events.keys())[0][0]
+            image_path = os.path.join(project_root, 'maps', f"{first_region}.png")
+            if os.path.exists(image_path):
+                file = discord.File(image_path, filename="map_thumb.png")
+
+        return embed, view, file
 
     async def tracker_loop(self):
         await self.bot.wait_until_ready()
@@ -100,9 +243,20 @@ class TrackerInstance:
             soonest_ts_after_update = min(n['next_ts'] for n in self.monitored_nodes)
             time_remaining = soonest_ts_after_update - now
             upcoming_events = [n for n in self.monitored_nodes if n['next_ts'] == soonest_ts_after_update]
+
+            self.current_upcoming_events = upcoming_events
+            self.current_time_remaining = time_remaining
+
             if soonest_ts_before_update != soonest_ts_after_update:
                 self.pinged_users_this_spawn.clear()
-            await self._check_and_send_pings(upcoming_events, time_remaining)
+
+                # 👇 新增：地点刷新了！马上提前检查并静默下载新地图
+                if upcoming_events:
+                    first_region = upcoming_events[0]['data'].get('地区CN')
+                    map_id = MAP_ID_MAP.get(first_region)
+                    if first_region and map_id:
+                        await self._ensure_map_image(first_region, map_id)
+
             should_update_display = False
             if soonest_ts_before_update != soonest_ts_after_update:
                 should_update_display = True
@@ -112,6 +266,7 @@ class TrackerInstance:
                 if (now - last_update_time) >= MEDIUM_REFRESH_INTERVAL: should_update_display = True
             elif (now - last_update_time) >= NORMAL_REFRESH_INTERVAL:
                 should_update_display = True
+
             if should_update_display:
                 last_update_time = now
                 grouped_events = defaultdict(list)
@@ -119,11 +274,33 @@ class TrackerInstance:
                     data = event['data']
                     key = (data.get('地区CN', 'N/A'), data.get('具体坐标', 'N/A'))
                     grouped_events[key].append(data.get('材料名CN', 'N/A'))
+
                 embed = self._build_embed(upcoming_events, grouped_events, time_remaining)
+                view = GatheringMapView(grouped_events)
+                kwargs = {'embed': embed, 'view': view}
+
+                if soonest_ts_before_update != soonest_ts_after_update:
+                    if grouped_events:
+                        first_region = list(grouped_events.keys())[0][0]
+                        image_path = os.path.join(project_root, 'maps', f"{first_region}.png")
+                        if os.path.exists(image_path):
+                            file = discord.File(image_path, filename="map_thumb.png")
+                            kwargs['attachments'] = [file]
+                        else:
+                            kwargs['attachments'] = []
+
                 try:
-                    if self.tracker_message: await self.tracker_message.edit(embed=embed)
+                    if self.tracker_message:
+                        await self.tracker_message.edit(**kwargs)
                 except (discord.errors.NotFound, discord.errors.HTTPException):
-                    self.tracker_message = await self.channel.send(embed=embed)
+                    kwargs.pop('attachments', None)
+                    if grouped_events:
+                        first_region = list(grouped_events.keys())[0][0]
+                        image_path = os.path.join(project_root, 'maps', f"{first_region}.png")
+                        if os.path.exists(image_path):
+                            kwargs['file'] = discord.File(image_path, filename="map_thumb.png")
+                    self.tracker_message = await self.channel.send(**kwargs)
+
             processing_time = time.time() - loop_start_time
             sleep_duration = LOOP_INTERVAL - processing_time
             if sleep_duration > 0: await asyncio.sleep(sleep_duration)
@@ -131,7 +308,9 @@ class TrackerInstance:
     async def _check_and_send_pings(self, upcoming_events, time_remaining):
         for user_id_str, ping_time in self.user_pings.items():
             user_id = int(user_id_str)
-            is_valid_ping, not_pinged_yet, is_time_to_ping = ping_time > 0, user_id not in self.pinged_users_this_spawn, ping_time >= time_remaining > ping_time - LOOP_INTERVAL
+            is_valid_ping = ping_time > 0
+            not_pinged_yet = user_id not in self.pinged_users_this_spawn
+            is_time_to_ping = ping_time >= time_remaining > ping_time - LOOP_INTERVAL
             if is_valid_ping and not_pinged_yet and is_time_to_ping:
                 user_watchlist = self.all_watchlists.get(user_id_str, [])
                 if not user_watchlist: continue
@@ -166,7 +345,7 @@ class TrackerInstance:
                               color=discord.Color.green())
         if not upcoming_events:
             embed.description += "\n\n当前没有你关注的项目即将刷新。"
-            embed.color = discord.Color.greyple();
+            embed.color = discord.Color.greyple()
             return embed
         event_time_info = upcoming_events[0]['data']
         embed.add_field(name=f"下一个刷新: ET {event_time_info.get('开始ET', '?')}:00",
@@ -184,6 +363,13 @@ class TrackerInstance:
         embed.set_footer(text=f"使用 !stop 停止")
         if time_remaining <= MEDIUM_THRESHOLD_SECONDS: embed.color = discord.Color.orange()
         if time_remaining <= URGENT_THRESHOLD_SECONDS: embed.color = discord.Color.red()
+
+        if grouped_events:
+            first_region = list(grouped_events.keys())[0][0]
+            image_path = os.path.join(project_root, 'maps', f"{first_region}.png")
+            if os.path.exists(image_path):
+                embed.set_thumbnail(url="attachment://map_thumb.png")
+
         return embed
 
     def _get_current_eorzea_time(self) -> str:

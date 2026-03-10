@@ -30,7 +30,7 @@ BOT_CONFIG = {
     "MANUAL_TIME_OFFSET_SECONDS": 0.0
 }
 # ... (后续代码与之前版本完全相同) ...
-INITIAL_EXTENSIONS = ['cogs.tracker_cog']
+INITIAL_EXTENSIONS = ['cogs.tracker_cog'] # <- 加入 cogs.api_cog
 intents = discord.Intents.default()
 intents.message_content = True
 class MyBot(commands.Bot):
