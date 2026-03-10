@@ -66,7 +66,7 @@ class MarketCog(commands.Cog):
         """
         # 确定要查询的大区
         target_dc = self.default_dc
-        dc_display_name = "猫小胖"
+        dc_display_name = "豆豆柴"
 
         if dc_input:
             if dc_input in self.dc_map:
