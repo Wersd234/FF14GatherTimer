@@ -146,7 +146,9 @@ class TrackerInstance:
         while not self.bot.is_closed():
             loop_start_time = time.time()
             now = loop_start_time + self.manual_offset
-            if not self.monitored_nodes: await asyncio.sleep(LOOP_INTERVAL); continue
+            if not self.monitored_nodes:
+                await asyncio.sleep(LOOP_INTERVAL)
+                continue
 
             # 👇 核心修复 1：强制跨越节点
             updated_any = False
@@ -165,7 +167,7 @@ class TrackerInstance:
             self.current_time_remaining = time_remaining
 
             should_update_display = False
-            # 👇 核心修复 2：一旦有物品更迭了时间，强制刷新面板
+            # 👇 核心修复 2：一旦有物品更迭了时间，强制清空已提醒名单，并刷新面板
             if updated_any:
                 self.pinged_users_this_spawn.clear()
                 should_update_display = True
@@ -190,8 +192,13 @@ class TrackerInstance:
                 try:
                     if self.tracker_message:
                         await self.tracker_message.edit(embed=embed, view=view)
+                    else:
+                        self.tracker_message = await self.channel.send(embed=embed, view=view)
                 except (discord.errors.NotFound, discord.errors.HTTPException):
                     self.tracker_message = await self.channel.send(embed=embed, view=view)
+
+            # 👇 核心修复 4：必须在每一次循环的最后，主动调用 ping 检查！
+            await self._check_and_send_pings(upcoming_events, time_remaining)
 
             processing_time = time.time() - loop_start_time
             sleep_duration = LOOP_INTERVAL - processing_time
@@ -200,18 +207,30 @@ class TrackerInstance:
     async def _check_and_send_pings(self, upcoming_events, time_remaining):
         for user_id_str, ping_time in self.user_pings.items():
             user_id = int(user_id_str)
-            is_valid_ping = ping_time > 0
+            # 获取用户设置的 ping 时间
+            target_ping_sec = int(ping_time)
+
+            # 判断逻辑：时间有效 && 没被 @ 过 && 当前剩余时间正好踩中了这个区间
+            is_valid_ping = target_ping_sec > 0
             not_pinged_yet = user_id not in self.pinged_users_this_spawn
-            is_time_to_ping = ping_time >= time_remaining > ping_time - LOOP_INTERVAL
+
+            # 使用一个宽容区间，防止系统卡顿导致错过那刚好的一秒
+            is_time_to_ping = target_ping_sec >= time_remaining > (target_ping_sec - LOOP_INTERVAL - 1.0)
+
             if is_valid_ping and not_pinged_yet and is_time_to_ping:
                 user_watchlist = self.all_watchlists.get(user_id_str, [])
-                if not user_watchlist: continue
+                if not user_watchlist:
+                    continue
+
                 items_to_ping_for = [event['data']['材料名CN'] for event in upcoming_events if
                                      event['data']['材料名CN'] in user_watchlist]
+
                 if items_to_ping_for:
                     try:
-                        message = f"<@{user_id}>，你关注的 **{', '.join(items_to_ping_for)}** 即将在 **{ping_time}** 秒后刷新！"
-                        await self.channel.send(message, delete_after=ping_time + 5)
+                        message = f"⏰ <@{user_id}>，你关注的 **{', '.join(items_to_ping_for)}** 即将在 **{target_ping_sec}** 秒后刷新！"
+                        # 发送提醒，并在倒计时结束后自动删除这条提醒消息保持频道整洁
+                        await self.channel.send(message, delete_after=target_ping_sec + 10)
+                        # 记录已提醒，防止在这几秒内疯狂连环 @
                         self.pinged_users_this_spawn.add(user_id)
                     except Exception as e:
                         print(f"发送提醒失败: {e}")
