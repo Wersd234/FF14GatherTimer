@@ -15,7 +15,7 @@ MAP_ID_MAP = {}
 # 获取项目根目录
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-map_id_filepath = os.path.join(project_root, 'map_id.json')
+map_id_filepath = os.path.join(project_root, 'data/map_id.json')
 
 if os.path.exists(map_id_filepath):
     try:
@@ -36,7 +36,7 @@ URGENT_REFRESH_INTERVAL = 1
 EORZEA_MULTIPLIER = 3600 / 175
 LOOP_INTERVAL = 1.0
 MAX_EMBED_FIELDS = 25
-WATCHLIST_FILE = 'watchlists.json'
+WATCHLIST_FILE = 'data/watchlists.json'
 PING_FILE = 'pings.json'
 
 

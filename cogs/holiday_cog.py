@@ -8,10 +8,9 @@ import json
 import os
 from collections import defaultdict
 
-# 配置文件路径
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-HOLIDAY_CONFIG_FILE = os.path.join(project_root, 'holiday_config.json')
+HOLIDAY_CONFIG_FILE = os.path.join(project_root, 'data/holiday_config.json')
 
 
 class HolidayCog(commands.Cog):
@@ -31,9 +30,8 @@ class HolidayCog(commands.Cog):
                     return json.load(f)
             except Exception:
                 pass
-        # 默认配置：已经为你绑定了谷歌日历专属中转链接
+        # 默认配置 (移除了 channel_id，因为现在由 CoreSettings 管理)
         return {
-            "channel_id": None,
             "calendar_url": "https://calendar.google.com/calendar/ical/up88drvlnnh2t77hbpqq8v33i2cngfh7%40import.calendar.google.com/public/basic.ics",
             "check_hour": 8,
             "check_minute": 0
@@ -49,18 +47,13 @@ class HolidayCog(commands.Cog):
             print(f"保存日历配置失败: {e}")
 
     async def fetch_and_parse_calendar(self):
-        """直连拉取谷歌日历，并分类为进行中和即将到来"""
         url = self.config.get("calendar_url")
         if not url or not url.startswith("http"):
             return "ERROR_INVALID_URL"
 
         now = datetime.datetime.now()
         today = now.date()
-
-        # 谷歌对机器人非常友好，不需要复杂的代理
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -90,26 +83,18 @@ class HolidayCog(commands.Cog):
                 summary = str(component.get('summary', '未知事件'))
                 description = str(component.get('description', '')).strip()
 
-                # 去重逻辑
                 identifier = f"{start_date}_{summary}"
                 if identifier in seen:
                     continue
                 seen.add(identifier)
 
-                ev = {
-                    "start": start_date,
-                    "end": end_date,
-                    "title": summary,
-                    "desc": description
-                }
+                ev = {"start": start_date, "end": end_date, "title": summary, "desc": description}
 
-                # 分类
                 if start_date <= today <= end_date:
                     ongoing.append(ev)
                 elif start_date > today:
                     upcoming[start_date].append(ev)
 
-            # 对未来活动按日期排序，限制最多显示接下来 10 个活动
             sorted_dates = sorted(upcoming.keys())
             limited_upcoming = defaultdict(list)
             count = 0
@@ -121,22 +106,23 @@ class HolidayCog(commands.Cog):
                 if count >= 10: break
 
             return {"ongoing": ongoing, "upcoming": limited_upcoming}
-
         except Exception as e:
             print(f"解析日历出错: {e}")
             return "ERROR_PARSE_FAILED"
 
-    # --------------------------------------------------
-    # 定时任务：每天早上推送今天的活动
-    # --------------------------------------------------
+    # ================= 保持原有时区和时间不变 =================
     @tasks.loop(minutes=1)
     async def daily_holiday_check(self):
         now = datetime.datetime.now()
         if now.hour == self.config["check_hour"] and now.minute == self.config["check_minute"]:
-            channel_id = self.config.get("channel_id")
-            if not channel_id: return
+            # 【核心修改】统一从 bot.broadcast_channels 读取 cal 的频道 ID
+            channel_id = getattr(self.bot, 'broadcast_channels', {}).get('cal')
+            if not channel_id:
+                return
+
             channel = self.bot.get_channel(channel_id)
-            if not channel: return
+            if not channel:
+                return
 
             events_data = await self.fetch_and_parse_calendar()
 
@@ -152,16 +138,13 @@ class HolidayCog(commands.Cog):
     async def before_check(self):
         await self.bot.wait_until_ready()
 
-    # --------------------------------------------------
-    # 指令区
-    # --------------------------------------------------
     @commands.group(name='cal', invoke_without_command=True)
     async def cal_group(self, ctx):
+        # 【核心修改】从帮助菜单中移除了 `!cal setchannel`
         help_text = (
             "**公共指令：**\n"
             "`!cal next` - 查看近期的所有活动排期\n\n"
             "**管理员指令：**\n"
-            "`!cal setchannel` - 设为推送频道\n"
             "`!cal setlink <URL>` - 设置谷歌 `.ics` 日历链接\n"
             "`!cal test` - 立刻测试今天的日历"
         )
@@ -186,9 +169,6 @@ class HolidayCog(commands.Cog):
 
         embed = discord.Embed(title="📅 社区活动排期板", color=discord.Color.teal())
 
-        # ==========================================
-        # 1. 渲染【正在进行中】
-        # ==========================================
         if ongoing:
             ongoing_text = ""
             for ev in ongoing:
@@ -203,11 +183,7 @@ class HolidayCog(commands.Cog):
 
             embed.add_field(name="🔥 正在进行中", value=ongoing_text, inline=False)
 
-        # ==========================================
-        # 2. 渲染【马上到来】(无正在进行的活动也统归类到这里)
-        # ==========================================
         if upcoming:
-            # 增加一个明显的分类标题栏，将板块隔开
             embed.add_field(name="━━━━━━━━━━━━━━━━━\n⏳ 马上到来", value="\u200b", inline=False)
 
             today = datetime.datetime.now().date()
@@ -220,7 +196,6 @@ class HolidayCog(commands.Cog):
                 else:
                     time_str = f"{days_left} 天后"
 
-                # 格式化日期标题，例如：📅 3月13日 (周五) - 2天后
                 date_header = f"📅 {d.month}月{d.day}日 ({self.weekdays[d.weekday()]}) - {time_str}"
 
                 ev_text = ""
@@ -229,7 +204,6 @@ class HolidayCog(commands.Cog):
                     if ev['desc']:
                         ev_text += f"└ *{ev['desc']}*\n"
 
-                # 将日期作为标题，活动内容放在日期底下
                 embed.add_field(name=date_header, value=ev_text, inline=False)
 
         if not ongoing and not upcoming:
@@ -237,12 +211,7 @@ class HolidayCog(commands.Cog):
 
         await loading.edit(content=None, embed=embed)
 
-    @cal_group.command(name='setchannel')
-    @commands.has_permissions(administrator=True)
-    async def set_channel(self, ctx):
-        self.config["channel_id"] = ctx.channel.id
-        self._save_data()
-        await ctx.send("✅ 已将当前频道设为自动推送频道！")
+    # 【核心修改】删除了原本的 @cal_group.command(name='setchannel')
 
     @cal_group.command(name='setlink')
     @commands.has_permissions(administrator=True)
